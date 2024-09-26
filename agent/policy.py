@@ -46,32 +46,38 @@ class LinearActor(nn.Module):
 class TransformerUnicycleActor(nn.Module):
     """Learns a residual to the given nominal controller using a Transformer encoder."""
     def __init__(self, nominal_controller, observation_dim, action_dim, u_max, u_min, 
-                 nominal_obs_dim=4, num_layers=2, nhead=8, dim_feedforward=256, 
-                 dropout=0.1, max_seq_length=16):
+                 num_layers=2, nhead=8, dim_feedforward=256, dropout=0.1, embedding_dim=64):
         super().__init__()
         self.nominal_controller = nominal_controller
 
-        self.nominal_obs_dim = nominal_obs_dim  # e.g., 4 (x, y, speed, theta)
-        self.observation_dim = observation_dim  # total_dim = seq_length * nominal_obs_dim
+        # Validate observation_dim
+        if observation_dim < 4:
+            raise ValueError("observation_dim must be at least 4 to accommodate the initial state.")
+        if (observation_dim - 4) % 2 != 0:
+            raise ValueError("The remaining observation dimensions after the initial state must be divisible by 2.")
 
-        # Compute sequence length based on observation_dim and nominal_obs_dim
-        if observation_dim % nominal_obs_dim != 0:
-            raise ValueError(f"observation_dim ({observation_dim}) is not divisible by nominal_obs_dim ({nominal_obs_dim}).")
-        self.seq_length = observation_dim // nominal_obs_dim
+        self.num_ref_points = (observation_dim - 4) // 2
+        self.actual_obs_dim = 2  # Each reference point has 2 dimensions (x, y)
+        self.embedding_dim = embedding_dim
 
-        # Positional Encoding (required for Transformer)
-        self.positional_encoding = PositionalEncoding(d_model=self.nominal_obs_dim, max_len=max_seq_length)
+        # Projection layers
+        self.project_initial = nn.Linear(4, embedding_dim)
+        self.project_ref = nn.Linear(2, embedding_dim)
+
+        # Positional Encoding
+        self.positional_encoding = PositionalEncoding(d_model=self.embedding_dim, max_len=self.num_ref_points + 1)  # +1 for duplicated (x, y)
 
         # Transformer Encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.nominal_obs_dim,
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.embedding_dim,
                                                    nhead=nhead,
                                                    dim_feedforward=dim_feedforward,
                                                    dropout=dropout,
                                                    activation='relu')
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # Output layers
-        self.fc_mu = nn.Linear(self.nominal_obs_dim, action_dim)
+        # Final layers
+        self.fc_combined = nn.Linear(embedding_dim + embedding_dim, 256)  # Initial state + Transformer output
+        self.fc_mu = nn.Linear(256, action_dim)
 
         # Action rescaling
         self.register_buffer(
@@ -85,30 +91,44 @@ class TransformerUnicycleActor(nn.Module):
         """
         x: Tensor of shape (batch_size, observation_dim)
         """
-        # Check if observation_dim matches
-        if x.shape[1] != self.observation_dim:
-            raise ValueError(f"Expected input dimension {self.observation_dim}, but got {x.shape[1]}.")
+        batch_size = x.size(0)
 
-        # Reshape x to (batch_size, seq_length, nominal_obs_dim)
-        x = x.view(x.size(0), self.seq_length, self.nominal_obs_dim)  # Shape: (batch, seq, nominal_obs_dim)
+        # Separate initial state and reference points
+        initial_state = x[:, :4]                     # Shape: (batch_size, 4)
+        reference_points = x[:, 4:]                  # Shape: (batch_size, observation_dim - 4)
+
+        # Reshape reference points to [batch_size, num_ref_points, 2]
+        reference_points = reference_points.view(batch_size, self.num_ref_points, 2)  # Shape: (batch_size, num_ref_points, 2)
+
+        # Extract and duplicate the initial (x, y)
+        initial_xy = initial_state[:, :2].unsqueeze(1)  # Shape: (batch_size, 1, 2)
+        reference_points = torch.cat([initial_xy, reference_points], dim=1)  # Shape: (batch_size, num_ref_points +1, 2)
+
+        # Project initial state and reference points
+        projected_initial = F.relu(self.project_initial(initial_state))  # Shape: (batch_size, embedding_dim)
+        projected_ref = F.relu(self.project_ref(reference_points))       # Shape: (batch_size, num_ref_points +1, embedding_dim)
 
         # Apply positional encoding
-        x = self.positional_encoding(x)  # Shape: (batch, seq, nominal_obs_dim)
+        x_seq = self.positional_encoding(projected_ref)  # Shape: (batch_size, num_ref_points +1, embedding_dim)
 
-        # Transformer expects input shape: (seq, batch, feature)
-        x = x.permute(1, 0, 2)  # Shape: (seq, batch, feature)
+        # Transformer expects input shape: (seq_length, batch_size, input_dim)
+        x_seq = x_seq.permute(1, 0, 2)  # Shape: (num_ref_points +1, batch_size, embedding_dim)
 
         # Pass through Transformer Encoder
-        x = self.transformer_encoder(x)  # Shape: (seq, batch, feature)
+        x_seq = self.transformer_encoder(x_seq)  # Shape: (num_ref_points +1, batch_size, embedding_dim)
 
         # Take the output from the last time step
-        x = x[-1, :, :]  # Shape: (batch, feature)
+        x_seq = x_seq[-1, :, :]  # Shape: (batch_size, embedding_dim)
 
-        # Compute action
-        x = torch.tanh(self.fc_mu(x))  # Shape: (batch, action_dim)
+        # Combine projected initial state and Transformer output
+        combined = torch.cat([projected_initial, x_seq], dim=1)  # Shape: (batch_size, 2 * embedding_dim)
+
+        # Pass through final layers
+        x = F.relu(self.fc_combined(combined))  # Shape: (batch_size, 256)
+        x = torch.tanh(self.fc_mu(x))           # Shape: (batch_size, action_dim)
 
         # Rescale actions
-        return x * self.action_scale + self.action_bias  # Shape: (batch, action_dim)
+        return x * self.action_scale + self.action_bias  # Shape: (batch_size, action_dim)
 
 class PositionalEncoding(nn.Module):
     """Adds positional information to the input embeddings."""
@@ -130,7 +150,5 @@ class PositionalEncoding(nn.Module):
         x: Tensor of shape (batch_size, seq_length, d_model)
         """
         seq_length = x.size(1)
-        if seq_length > self.pe.size(1):
-            raise ValueError(f"Sequence length {seq_length} exceeds maximum length {self.pe.size(1)}.")
         x = x + self.pe[:, :seq_length, :]
         return x

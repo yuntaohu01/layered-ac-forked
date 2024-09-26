@@ -21,7 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 sys.path.append("..")
 from env.trajcondenv import TrajConditionedEnv
 from env.costs.quadratictracking import QuadraticTrackingCost
-from .policy import SimpleActor, LinearActor, UnicycleActor
+from .policy import SimpleActor, LinearActor, TransformerUnicycleActor
 from .qnetwork import SimpleQNetwork, QuadraticQNetwork, UnicycleQNetwork
 from .layeredargs import LayeredArgs
 

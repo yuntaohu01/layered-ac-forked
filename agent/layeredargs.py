@@ -65,3 +65,5 @@ class LayeredArgs:
     """number of gradient steps taken to solve the traj opt problem"""
     no_dual: bool = False
     """flag for not using the dual variable when generating traj. For experiment purpose"""
+    save_dir: str = '.'
+    """save checkpoint root directory"""

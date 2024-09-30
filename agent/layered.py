@@ -124,6 +124,10 @@ class LayeredAgent:
                 for key, value in vars(args).items()])),
         )
 
+        # Existing initialization code
+        self.checkpoint_dir = os.path.join(args.save_dir, 'checkpoints')
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+
         # Initialize replay buffer to be None
         self.rb = None
 
@@ -211,11 +215,70 @@ class LayeredAgent:
         )
         return np.mean(rx_diffs), rel_cost, extra_vals
 
+    def _save_checkpoint(self, global_step):
+        checkpoint = {
+            'actor_state_dict': self.actor.state_dict(),
+            'target_actor_state_dict': self.target_actor.state_dict(),
+            'qf1_state_dict': self.qf1.state_dict(),
+            'qf1_target_state_dict': self.qf1_target.state_dict(),
+            'qf2_state_dict': self.qf2.state_dict(),
+            'qf2_target_state_dict': self.qf2_target.state_dict(),
+            'dual_network_state_dict': self.dual_network.state_dict(),
+            'actor_optimizer_state_dict': self.actor_optimizer.state_dict(),
+            'q_optimizer_state_dict': self.q_optimizer.state_dict(),
+            'dual_network_optimizer_state_dict': self.dual_network_optimizer.state_dict(),
+            'replay_buffer': self.rb,  # Ensure your replay buffer is serializable
+            'global_step': global_step,
+            # Add any other necessary state information
+        }
+        filename = os.path.join(self.checkpoint_dir, f'checkpoint_step_{global_step}.pth')
+        torch.save(checkpoint, filename)
+        print(f"Checkpoint saved at step {global_step} to {filename}")
+    
+    def _load_checkpoint(self, filepath):
+        """
+        Loads the agent's state from a checkpoint file.
+        
+        Args:
+            filepath (str): Path to the checkpoint file.
+        
+        Returns:
+            int: The global step from which to resume training.
+        """
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"No checkpoint found at '{filepath}'")
+
+        checkpoint = torch.load(filepath, map_location=self.device)
+        self.actor.load_state_dict(checkpoint['actor_state_dict'])
+        self.target_actor.load_state_dict(checkpoint['target_actor_state_dict'])
+        self.qf1.load_state_dict(checkpoint['qf1_state_dict'])
+        self.qf1_target.load_state_dict(checkpoint['qf1_target_state_dict'])
+        self.qf2.load_state_dict(checkpoint['qf2_state_dict'])
+        self.qf2_target.load_state_dict(checkpoint['qf2_target_state_dict'])
+        self.dual_network.load_state_dict(checkpoint['dual_network_state_dict'])
+        
+        self.actor_optimizer.load_state_dict(checkpoint['actor_optimizer_state_dict'])
+        self.q_optimizer.load_state_dict(checkpoint['q_optimizer_state_dict'])
+        self.dual_network_optimizer.load_state_dict(checkpoint['dual_network_optimizer_state_dict'])
+        
+        self.rb = checkpoint['replay_buffer']
+        global_step = checkpoint['global_step']
+
+        print(f"[INFO] Checkpoint loaded from '{filepath}' at step {global_step}")
+        return global_step
+
     def learn(self,
               overwrite_rb=True,
-              seed=None):
+              seed=None,
+              load_checkpoint_path=None):
 
         self.seed(self.args.seed, self.args.torch_deterministic)
+
+        # Optionally load from a checkpoint
+        if load_checkpoint_path is not None:
+            global_step = self._load_checkpoint(load_checkpoint_path)
+        else:
+            global_step = self.args.learning_starts  # Start from initial step
 
         # replay buffer
         if overwrite_rb:
@@ -379,6 +442,14 @@ class LayeredAgent:
                 for (val_name, _), val_value in zip(self.extra_validation_fns, extra_vals):
                     self.writer.add_scalar(f"charts/{val_name}", val_value, global_step)
 
+            # Saving checkpoints every 10,000 steps
+            checkpoint_interval = 10000  # Adjust as needed
+            if global_step % checkpoint_interval == 0:
+                self._save_checkpoint(global_step)
+
+        # Optionally, save final models outside the loop
+        self._save_checkpoint(global_step)
+        
     def close(self):
         self.envs.close()
         self.writer.close()

@@ -442,8 +442,8 @@ class LayeredAgent:
                 for (val_name, _), val_value in zip(self.extra_validation_fns, extra_vals):
                     self.writer.add_scalar(f"charts/{val_name}", val_value, global_step)
 
-            # Saving checkpoints every 10,000 steps
-            checkpoint_interval = 10000  # Adjust as needed
+            # Saving checkpoints every defaultly 100,000 steps
+            checkpoint_interval = self.args.ckpt_steps  # Adjust as needed
             if global_step % checkpoint_interval == 0:
                 self._save_checkpoint(global_step)
 

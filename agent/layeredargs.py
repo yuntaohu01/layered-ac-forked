@@ -67,3 +67,4 @@ class LayeredArgs:
     """flag for not using the dual variable when generating traj. For experiment purpose"""
     save_dir: str = '.'
     """save checkpoint root directory"""
+    ckpt_steps: int = 100000

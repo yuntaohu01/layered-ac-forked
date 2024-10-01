@@ -267,6 +267,47 @@ class LayeredAgent:
         print(f"[INFO] Checkpoint loaded from '{filepath}' at step {global_step}")
         return global_step
 
+    def load_models(self, checkpoint_path):
+        """
+        Loads the model parameters from a checkpoint file for testing/evaluation.
+        
+        Args:
+            checkpoint_path (str): Path to the checkpoint file.
+        """
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"No checkpoint found at '{checkpoint_path}'")
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+        # Load actor network
+        self.actor.load_state_dict(checkpoint['actor_state_dict'])
+        self.actor.to(self.device)
+        self.actor.eval()  # Set to evaluation mode
+
+        # Load target actor if needed
+        if 'target_actor_state_dict' in checkpoint:
+            self.target_actor.load_state_dict(checkpoint['target_actor_state_dict'])
+            self.target_actor.to(self.device)
+            self.target_actor.eval()
+
+        # Load Q-function networks if needed for evaluation
+        if 'qf1_state_dict' in checkpoint and 'qf2_state_dict' in checkpoint:
+            self.qf1.load_state_dict(checkpoint['qf1_state_dict'])
+            self.qf1.to(self.device)
+            self.qf1.eval()
+
+            self.qf2.load_state_dict(checkpoint['qf2_state_dict'])
+            self.qf2.to(self.device)
+            self.qf2.eval()
+
+        # Load dual network if used in evaluation
+        if 'dual_network_state_dict' in checkpoint:
+            self.dual_network.load_state_dict(checkpoint['dual_network_state_dict'])
+            self.dual_network.to(self.device)
+            self.dual_network.eval()
+
+        print(f"[INFO] Models loaded successfully from '{checkpoint_path}'")
+        
     def learn(self,
               overwrite_rb=True,
               seed=None,

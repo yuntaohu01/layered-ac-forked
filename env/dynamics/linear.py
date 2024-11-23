@@ -6,7 +6,8 @@ from .abstractdynamics import AbstractDynamics
 class LinearDynamics(AbstractDynamics):
     def __init__(self, A, B):
         """ Initialize the environment. """
-        self.A, self.B = A, B
+        self.A = A.to(A.device)
+        self.B = B.to(A.device)
         self.Nx, self.Nu = B.shape
         self.device = self.A.device
 
@@ -20,16 +21,28 @@ class LinearDynamics(AbstractDynamics):
         return x_next.T
 
 
-def sample_linear_dynamics(Nx, Nu, A_norm=0.995, B_norm=1):
-    """ Generates dynamics matrices (A,B)
+def sample_linear_dynamics(Nx, Nu, A_norm=0.995, B_norm=1, device='cpu', seed = None):
+    """Generates dynamics matrices (A,B) on a specified device.
+
     Parameters:
-        - A_norm:   float, operator norm of matrix A
-        - B_norm:   float, operator norm of matrix B
+        - Nx: int, number of state variables
+        - Nu: int, number of input variables
+        - A_norm: float, operator norm of matrix A (default: 0.995)
+        - B_norm: float, operator norm of matrix B (default: 1)
+        - device: str, the device to use ('cpu' or 'cuda')
+
     Returns:
-        - lin_dym:  LinearDynamics object with dynamics (A, B)
+        - lin_dym: LinearDynamics object with dynamics (A, B) on the specified device
     """
-    A = torch.randn(Nx, Nx)
-    B = torch.randn(Nx, Nu)
+    if seed is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+
+    A = torch.randn(Nx, Nx, device=device)
+    B = torch.randn(Nx, Nu, device=device)
+
     # Normalize A and B
     A = A / torch.linalg.norm(A, ord=2) * A_norm
     B = B / torch.linalg.norm(B, ord=2) * B_norm

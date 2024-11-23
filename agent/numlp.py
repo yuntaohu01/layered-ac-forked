@@ -92,7 +92,18 @@ class NuMLPHelper:
                 # Optionally, log model graph once
                 if epoch == 1:
                     self.writer.add_graph(self.model, r_traj_flat)
-                
+
+    def load_model(self, checkpoint_path):
+        """
+        Loads the model weights from a checkpoint file.
+
+        Parameters:
+            checkpoint_path (str): Path to the checkpoint file.
+        """
+        self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
+        self.model.to(self.device)
+        print(f'Model loaded from {checkpoint_path}')
+        
     def validate_model(self, batch_size, generate_training_data_func, max_iters, tol, alpha):
         """
         Validates the NuMLP model by computing the tracking error.

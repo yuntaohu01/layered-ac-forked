@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter  # Import TensorBoard's SummaryWriter
+import matplotlib.pyplot as plt
 
 # Define the Neural Network Model
 class NuMLP(nn.Module):
@@ -103,8 +104,8 @@ class NuMLPHelper:
         self.model.load_state_dict(torch.load(checkpoint_path, map_location=self.device))
         self.model.to(self.device)
         print(f'Model loaded from {checkpoint_path}')
-        
-    def validate_model(self, batch_size, generate_training_data_func, max_iters, tol, alpha):
+
+    def validate_model(self, batch_size, generate_training_data_func, max_iters, tol, alpha, n_plt = 5):
         """
         Validates the NuMLP model by computing the tracking error.
 
@@ -112,41 +113,60 @@ class NuMLPHelper:
             batch_size (int): Size of the validation batch.
             generate_training_data_func (callable): Function to generate validation data.
         """
-        model.eval()
-        with torch.no_grad():
-            r_traj_val, _ = generate_training_data_func(batch_size, T, dynamics, controller)
-            r_traj_flat = r_traj_val.reshape(batch_size, -1)
-            delta_r_pred_flat = model(r_traj_flat)
-            delta_r_pred = delta_r_pred_flat.reshape(batch_size, T, dynamics.Nx)
-            # Adjust reference trajectory
-            adjusted_r_traj = r_traj_val + delta_r_pred  # shape (batch_size, T + 1, Nx)
+        self.model.eval()
+        r_traj, _ = generate_training_data_func(batch_size, self.horizon, self.dynamics, self.controller)
+        r_traj_flat = r_traj.reshape(batch_size, -1)
+        delta_r_pred_flat = self.model(r_traj_flat)
+        delta_r_pred = delta_r_pred_flat.reshape(batch_size, self.horizon + 1, self.dynamics.Nx)
+        # Adjust reference trajectory
+        adjusted_r_traj = r_traj - delta_r_pred  # shape (batch_size, T + 1, Nx)
         # Create x0_refs with adjusted reference trajectory
-        x0 = torch.zeros(batch_size, dynamics.Nx, device=device)  # Initial state is zero
+        x0 = r_traj[:, 0, :]  # Initial state is zero
 
         # Reference of control output is setting to be zero defaultly
-        u_ref_traj = torch.zeros(batch_size, T, Nu, device=device)
-        u0 = torch.zeros(batch_size, T, Nu, device=device)
+        u_ref_traj = torch.zeros(batch_size, self.horizon, self.dynamics.Nu, device=self.device)
+        u0 = torch.zeros(batch_size, self.horizon, self.dynamics.Nu, device=self.device)
             
         # Use controller to track unadjusted_reference
-        u_exac_unadj, x_exac_unadj = controller.solve(x0, u0, r_traj, u_ref_traj, max_iters=max_iters, tol=tol, alpha=alpha) 
-        # Use controller to get control inputs
-        u_exac, x_exac = controller.controller.solve(x0, u0, r_traj, u_ref_traj, max_iters=max_iters, tol=tol, alpha=alpha)
+        u_exac_unadj, x_exac_unadj = self.controller.solve(x0, u0, r_traj, u_ref_traj, max_iters=max_iters, tol=tol, alpha=alpha) 
+        # Use controller to get control inputs with dual variable adjust
+        u_exac, x_exac = self.controller.solve(x0, u0, adjusted_r_traj, u_ref_traj, max_iters=max_iters, tol=tol, alpha=alpha)
+
+        # Loss
+        Loss_ = torch.mean((x_exac_unadj - adjusted_r_traj) ** 2)
+        print(f'Loss(unadjusted_xtraj - adjusted_rtraj): {Loss_.item():.4f}')
 
         # Compute tracking error before adjusting
-        tracking_error_unadj = torch.mean((x_exac_unadj - r_traj_val) ** 2)
+        tracking_error_unadj = torch.mean((x_exac_unadj - r_traj) ** 2)
         print(f'Tracking Error before adjustment: {tracking_error_unadj.item():.4f}')
 
         # Compute tracking error between adjusted trajectory and original reference
-        tracking_error = torch.mean((x_exac - r_traj_val) ** 2)
+        tracking_error = torch.mean((x_exac - r_traj) ** 2)
         print(f'Tracking Error after adjustment: {tracking_error.item():.4f}')
+        # Plotting the trajectories for the first 5 samples
+        num_samples_to_plot = min(n_plt, batch_size)  # Ensure we don't exceed the batch size
 
-        # Logging to TensorBoard
-        if global_step is not None:
-            self.writer.add_scalar('Error_after/validation', tracking_error, global_step)
-            self.writer.add_scalar('Error_before/validation', tracking_error_unadj, global_step)
-        else:
-            self.writer.add_scalar('Error_after/validation', tracking_error)
-            self.writer.add_scalar('Error_before/validation', tracking_error_unadj)
+        time_steps = torch.arange(self.horizon + 1)
+
+        for sample_idx in range(num_samples_to_plot):
+            # Extract positions for plotting
+            x_exac_pos = x_exac[sample_idx, :, :2].cpu().detach().numpy()
+            x_exac_unadj_pos = x_exac_unadj[sample_idx, :, :2].cpu().detach().numpy()
+            r_traj_pos = r_traj[sample_idx, :, :2].cpu().detach().numpy()
+            adjusted_r_traj_pos = adjusted_r_traj[sample_idx, :, :2].cpu().detach().numpy()
+
+            # Plot trajectories in 2D space
+            plt.figure(figsize=(30,6))
+            plt.plot(x_exac_pos[:, 0], x_exac_pos[:, 1], '-o', label='x_exac (Adjusted)')
+            plt.plot(x_exac_unadj_pos[:, 0], x_exac_unadj_pos[:, 1], '-o', label='x_exac_unadj (Unadjusted)')
+            plt.plot(r_traj_pos[:, 0], r_traj_pos[:, 1], '-o', label='r_traj (Reference)')
+            plt.plot(adjusted_r_traj_pos[:, 0], adjusted_r_traj_pos[:, 1], '-o', label='adjusted_r_traj (Adjusted Reference)')
+            plt.title(f'Sample {sample_idx + 1}: Trajectories in 2D Space')
+            plt.xlabel('X Position')
+            plt.ylabel('Y Position')
+            plt.legend()
+            plt.grid(True)
+            plt.show()
 
     def close_writer(self):
         self.writer.close()

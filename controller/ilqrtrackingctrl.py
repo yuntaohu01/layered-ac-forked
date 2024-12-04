@@ -198,10 +198,10 @@ class ILQRtrackingcontroller:
                 K = -torch.bmm(Q_uu_inv, Q_ux)  # Shape: (batch_size, Nu, Nx)
                 k = -torch.bmm(Q_uu_inv, Q_u.unsqueeze(2)).squeeze(2)  # Shape: (batch_size, Nu)
                 # Update value function
-                # V_x = Q_x - torch.bmm(K.transpose(1, 2), torch.bmm(Q_uu, k.unsqueeze(2))).squeeze(2)  # Shape: (batch_size, Nx)
-                # V_xx = Q_xx - torch.bmm(K.transpose(1, 2), torch.bmm(Q_uu, K))  # Shape: (batch_size, Nx, Nx)
-                V_x = Q_x + torch.bmm(K.transpose(1, 2), Q_u.unsqueeze(2)).squeeze(2)  # Shape: (batch_size, state_dim)
-                V_xx = Q_xx + torch.bmm(K.transpose(1, 2), torch.bmm(Q_uu, K))  # Shape: (batch_size, state_dim, state_dim)
+                V_x = Q_x - torch.bmm(K.transpose(1, 2), torch.bmm(Q_uu, k.unsqueeze(2))).squeeze(2)  # Shape: (batch_size, Nx)
+                V_xx = Q_xx - torch.bmm(K.transpose(1, 2), torch.bmm(Q_uu, K))  # Shape: (batch_size, Nx, Nx)
+                # V_x = Q_x + torch.bmm(K.transpose(1, 2), Q_u.unsqueeze(2)).squeeze(2)  # Shape: (batch_size, state_dim)
+                # V_xx = Q_xx + torch.bmm(K.transpose(1, 2), torch.bmm(Q_uu, K))  # Shape: (batch_size, state_dim, state_dim)
 
                 # Store gains
                 K_traj[:, t, :, :] = K
@@ -254,17 +254,8 @@ class ILQRtrackingcontroller:
             - controller: Controller (ILQRHelper instance).
         """
         # Generate validation data
-        r_traj_val, delta_r = generate_training_data_func(batch_size, T, dynamics, controller)
-        
-        # Initial state: assuming zero initial state
-        x0 = r_traj_val[:, 0, :]
-
-        # Reference control trajectory: assuming zero control by default
-        u_ref_traj = torch.zeros(batch_size, T, dynamics.Nu, device=self.device)  # Shape: (batch_size, T, control_dim)
-        u0 = torch.zeros(batch_size, T, dynamics.Nu, device=self.device)  # Initial control sequence
-
-        # Solve iLQR to track the reference trajectory
-        u_exac_unadj, x_exac_unadj = self.solve(x0, u0, r_traj_val, u_ref_traj, max_iters=max_iters, tol=tol, alpha=alpha) 
+        x_exac_unadj, delta_r = generate_training_data_func(batch_size, T, dynamics, controller)
+        r_traj_val = x_exac_unadj + delta_r
 
         # Compute tracking error
         tracking_error_unadj = torch.mean(delta_r)

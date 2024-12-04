@@ -64,15 +64,15 @@ class NuMLPHelper:
         self.model.train()
         for epoch in range(1, num_epochs + 1):
             # Generate training data
-            r_traj, delta_r = generate_training_data_func(batch_size, self.horizon, self.dynamics, self.controller)
+            x_exac, delta_r = generate_training_data_func(batch_size, self.horizon, self.dynamics, self.controller)
             
             # Flatten the reference trajectories and delta_r for the neural network
-            r_traj_flat = r_traj.reshape(batch_size, -1).to(self.device)  # Shape: (batch_size, Nx * horizon)
+            x_exac_flat = x_exac.reshape(batch_size, -1).to(self.device)  # Shape: (batch_size, Nx * horizon)
             delta_r_flat = delta_r.reshape(batch_size, -1).to(self.device)  # Shape: (batch_size, Nx * horizon)
             
             # Forward pass
             self.optimizer.zero_grad()
-            outputs = self.model(r_traj_flat)
+            outputs = self.model(x_exac_flat)
             loss = self.criterion(outputs, delta_r_flat)
             
             # Backward pass and optimization
@@ -92,7 +92,7 @@ class NuMLPHelper:
                 
                 # Optionally, log model graph once
                 if epoch == 1:
-                    self.writer.add_graph(self.model, r_traj_flat)
+                    self.writer.add_graph(self.model, x_exac_flat)
 
     def load_model(self, checkpoint_path):
         """
@@ -114,12 +114,13 @@ class NuMLPHelper:
             generate_training_data_func (callable): Function to generate validation data.
         """
         self.model.eval()
-        r_traj, _ = generate_training_data_func(batch_size, self.horizon, self.dynamics, self.controller)
+        x_exac_unadj, delta_r = generate_training_data_func(batch_size, self.horizon, self.dynamics, self.controller)
+        r_traj = x_exac_unadj + delta_r
         r_traj_flat = r_traj.reshape(batch_size, -1)
         delta_r_pred_flat = self.model(r_traj_flat)
         delta_r_pred = delta_r_pred_flat.reshape(batch_size, self.horizon + 1, self.dynamics.Nx)
         # Adjust reference trajectory
-        adjusted_r_traj = r_traj - delta_r_pred  # shape (batch_size, T + 1, Nx)
+        adjusted_r_traj = r_traj + delta_r_pred  # shape (batch_size, T + 1, Nx)
         # Create x0_refs with adjusted reference trajectory
         x0 = r_traj[:, 0, :]  # Initial state is zero
 
@@ -127,8 +128,6 @@ class NuMLPHelper:
         u_ref_traj = torch.zeros(batch_size, self.horizon, self.dynamics.Nu, device=self.device)
         u0 = torch.zeros(batch_size, self.horizon, self.dynamics.Nu, device=self.device)
             
-        # Use controller to track unadjusted_reference
-        u_exac_unadj, x_exac_unadj = self.controller.solve(x0, u0, r_traj, u_ref_traj, max_iters=max_iters, tol=tol, alpha=alpha) 
         # Use controller to get control inputs with dual variable adjust
         u_exac, x_exac = self.controller.solve(x0, u0, adjusted_r_traj, u_ref_traj, max_iters=max_iters, tol=tol, alpha=alpha)
 
